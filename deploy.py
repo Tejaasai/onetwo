@@ -1,170 +1,313 @@
 import os
-import streamlit as st
+import time
+import random
+import hashlib
+import requests
 import pandas as pd
-import numpy as np
+import streamlit as st
 import matplotlib.pyplot as plt
 import seaborn as sns
-from wordcloud import WordCloud
 from bs4 import BeautifulSoup
-import requests
-import time
+from wordcloud import WordCloud
+from urllib.parse import urlparse, urlunparse
+from dotenv import load_dotenv
 
-# Define the scraping function
-def scrape_flipkart(base_url, num_pages):
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'
+# Load environment variables
+load_dotenv()
+
+# ---------------------- Authentication System ----------------------
+def authenticate_user(username, password):
+    """Secure authentication system with hashed passwords"""
+    authorized_users = {
+        "admin": hashlib.sha256(os.getenv("ADMIN_PW", "admin@123").encode()).hexdigest(),
+        "user": hashlib.sha256(os.getenv("USER_PW", "user@123").encode()).hexdigest()
     }
-    all_names = []
-    all_prices = []
-    all_discounts = []
-    all_ratings = []
+    return authorized_users.get(username) == hashlib.sha256(password.encode()).hexdigest()
 
-    for page in range(1, num_pages + 1):
-        try:
-            url = f"{base_url}&page={page}" if "?" in base_url else f"{base_url}?page={page}"
-            source = requests.get(url, headers=headers)
-            payload = {
-                'api_key': os.getenv("SCRAPER_API_KEY"),
-                'url': url
-            }
-            source = requests.get('http://api.scraperapi.com', params=payload, headers=headers)
-            source.raise_for_status()
-            soup = BeautifulSoup(source.text, 'html.parser')
-            main_container = soup.find('div', class_=['DOjaWF gdgoEp'])
+# Passwords Are Never Stored in Plain Text: Even if someone hacks the system, they can’t see the original passwords—only the scrambled hashes
 
-            if main_container:
-                products = main_container.find_all('div', class_=['tUxRFH', 'slAVV4', '_1sdMkc LFEi7Z'])
-                for p in products:
-                    # Extract name
-                    name_elem = p.find('div', class_=['KzDlHZ'])
-                    name = name_elem.text if name_elem else (
-                        p.find('a', class_=['wjcEIp', 'WKTcLC', 'WKTcLC BwBZTg']).text 
-                        if p.find('a', class_=['wjcEIp', 'WKTcLC', 'WKTcLC BwBZTg']) 
-                        else "Not Available"
-                    )
-                    # Extract price
-                    price_elem = p.find('div', class_=['Nx9bqj _4b5DiR', 'Nx9bqj'])
-                    price_text = price_elem.text.strip().replace('₹', '').replace(',', '') if price_elem else "Not Available"
-                    try:
-                        price = float(price_text)
-                    except ValueError:
-                        price = np.nan
-                    # Extract discount
-                    discount_elem = p.find('div', class_='UkUFwK')
-                    discount = discount_elem.text.strip().replace('off', '') if discount_elem else "Not Available"
-                    # Extract rating
-                    rating_elem = p.find('div', class_='XQDdHH')
-                    rating_text = rating_elem.text if rating_elem else "Not Available"
-                    try:
-                        rating = float(rating_text)
-                    except ValueError:
-                        rating = np.nan
+# When you enter your password, it gets converted into a scrambled format (called a "hash"). 
+# This process is one-way — you can’t convert it back into the original password.
+# For example:
+# Password: admin@123
+# Scrambled Code (Hash): ef92b778bafe771e89245b89ecbc3457b63e4e3
 
-                    all_names.append(name)
-                    all_prices.append(price)
-                    all_discounts.append(discount)
-                    all_ratings.append(rating)
-            time.sleep(1)  # Delay to avoid overwhelming the server
-        except Exception as e:
-            st.error(f"Error scraping page {page}: {e}")
-            continue
+def login_form():
+    """Display login form and handle authentication"""
+    with st.form("Login"):
+        st.subheader("🔒 Administrator Login")
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+        if st.form_submit_button("Login"):
+            if authenticate_user(username, password):
+                st.session_state.authenticated = True
+                st.session_state.username = username
+                st.rerun()
+            else:
+                st.error("Invalid credentials")
 
-    df = pd.DataFrame({
-        'name': all_names,
-        'price': all_prices,
-        'discount': all_discounts,
-        'rating': all_ratings
-    })
-    return df
+def logout():
+    """Clear session state for logout"""
+    st.session_state.clear()
 
-# Streamlit App
+# ---------------------- Enhanced Scraping Function ----------------------
+def get_headers():
+    """Generate random headers for each request"""
+    user_agents = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.2 Safari/605.1.15",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.107 Safari/537.36"
+    ]
 
-st.sidebar.header("Scrape Settings")
-url = st.sidebar.text_input("Flipkart URL", value="https://www.flipkart.com/search?q=t+shirts")
-pages = st.sidebar.slider("Number of Pages", min_value=1, max_value=3, value=1)
+    # Pretends to be different browsers (random user agents) 
+    
+    return {
+        'User-Agent': random.choice(user_agents),
+        'Accept-Language': 'en-US,en;q=0.9',
+        #en-US: "I prefer U.S. English."
+        #en;q=0.9: "If U.S. English isn’t available, I can also accept other types of English."
+        'Referer': 'https://www.google.com/',
+        #By setting the Referer as https://www.google.com/, you’re pretending to tell the website: "Hey, I clicked this link from Google search."
+        'Accept-Encoding': 'gzip, deflate, br'
+        #gzip, deflate, and br are types of compression formats.
+        #You’re telling the website: "I can handle these formats, so send me the compressed version if you have it."
+    }
 
-# Display Metrics and Graphs
-st.markdown(f"""
-    <div style='background:#f9ff33;padding:20px;border-radius:10px;margin-bottom:20px'>
+def scrape_flipkart(urls, num_pages):
+    """Robust scraping function with anti-blocking measures"""
+    all_data = {
+        'Name': [],
+        'Price': [],
+        'Rating': [],
+        'Discount': []
+    }
+
+    for base_url in urls:
+        parsed_url = urlparse(base_url)
+        
+        for page in range(1, num_pages + 1):
+            try:
+                # Add human-like delay
+                time.sleep(random.uniform(2.5, 6.5))
+
+                # Build URL with pagination
+                query = f"{parsed_url.query}&page={page}" if parsed_url.query else f"page={page}"
+                url = urlunparse(parsed_url._replace(query=query))
+
+                # Make request through proxy
+                api_key = os.getenv("SCRAPER_API_KEY")
+                scraperapi_url = f"http://api.scraperapi.com?api_key={api_key}&url={url}"
+                response = requests.get(scraperapi_url, headers=get_headers(), timeout=20)
+                #It uses a pool of thousands of IP addresses from different regions, so websites can’t tell it’s scraping. 
+                # Every request looks like it’s coming from a new visitor.
+
+                # Check for blocking
+                if response.status_code in [403, 429, 503]:
+                    st.error("Access denied. Try reducing request frequency.")
+                    break
+
+                response.raise_for_status()
+                soup = BeautifulSoup(response.text, 'html.parser')
+
+                # Updated 2024 CSS selectors
+                main_container = soup.find('div', class_=['DOjaWF gdgoEp'])
+                products = main_container.find_all('div', class_=['tUxRFH','slAVV4','_1sdMkc LFEi7Z']) if main_container else []  # Product container
+                
+                for product in products:
+                    # Product Name
+                    name = product.find(['a', 'div'], class_=['KzDlHZ', 'wjcEIp', 'WKTcLC', 'WKTcLC BwBZTg'])
+                    all_data['Name'].append(name.text.strip() if name else "N/A")
+
+                    # Price
+                    price = product.find('div', class_=['Nx9bqj','Nx9bqj _4b5DiR'])
+                    all_data['Price'].append(price.text.replace('₹', '').replace(',', '') if price else "0")
+
+                    # Rating
+                    rating = product.find('div', class_='XQDdHH')
+                    all_data['Rating'].append(rating.text.strip() if rating else "0")
+
+                    # Discount
+                    discount = product.find('div',class_='UkUFwK')
+                    all_data['Discount'].append(discount.text.split('%')[0] if discount else "0")
+
+            except Exception as e:
+                st.error(f"Error on page {page}: {str(e)}")
+                continue
+
+    return pd.DataFrame(all_data)
+
+# ---------------------- Main Application ----------------------
+def main():
+    st.set_page_config(
+        page_title="Flipkart Scraper Pro",
+        page_icon="📈",
+        layout="wide"
+    )
+
+    if not st.session_state.get('authenticated'):
+        login_form()
+        return
+
+    # Sidebar Controls
+    st.sidebar.button("🚪 Logout", on_click=logout)
+    st.sidebar.header("Configuration ⚙️")
+    
+    # URL Input
+    urls = st.sidebar.text_area(
+        "🔍 Enter Flipkart Search URLs (one per line):",
+        height=100,
+        help="Example: https://www.flipkart.com/search?q=smartphones"
+    ).splitlines()
+
+    # Scraping Limits
+    num_pages = st.sidebar.slider(
+        "📄 Pages per URL (Max 3)", 
+        min_value=1, 
+        max_value=3, 
+        value=1
+    )
+
+    # Main Interface of scraper which is displayed as top header of page
+    st.markdown(f"""
+    <div style='background:#f8f9fa;padding:20px;border-radius:10px;margin-bottom:20px'>
         <h1 style='color:#2874f0;text-align:center'>
             🛍️ Flipkart Smart Scraper
         </h1>
+        <p style='text-align:center'>Logged in as: {st.session_state.username}</p>
     </div>
     """, unsafe_allow_html=True)
 
-if st.sidebar.button("Scrape Data"):
-    with st.spinner("Scraping data..."):
-        df = scrape_flipkart(url, pages)
-    
-    if not df.empty:
-        st.success("Data scraped successfully!")
-        
-        
+    # Scraping Trigger
+    if st.sidebar.button("🚀 Start Scraping", type="primary"):
+        if not any(urls):
+            st.warning("Please enter valid URLs")
+            return
 
-        # Metrics
-        st.subheader("📈 Key Performance Indicators")
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Total Products", len(df))
-        col2.metric("Average Price", f"₹{df['price'].mean():.2f}" if not df['price'].dropna().empty else "N/A")
-        avg_rating = df['rating'].mean()
-        col3.metric("Average Rating", f"{avg_rating:.2f}/5" if not pd.isna(avg_rating) else "N/A")
+        with st.spinner("🕸️ Scanning Flipkart for products..."):
+            try:
+                df = scrape_flipkart(
+                    urls=[u.strip() for u in urls if u.strip()],
+                    num_pages=num_pages
+                )
+                
+                # Data Processing
+                numeric_cols = ['Price', 'Rating', 'Discount']
+                df[numeric_cols] = df[numeric_cols].apply(pd.to_numeric, errors='coerce')
+                df = df.reset_index(drop=True)
+                
+                st.session_state.df = df
+                st.success(f"✅ Collected {len(df)} valid products")
 
-        st.dataframe(df)
+            except Exception as e:
+                st.error(f"Scraping failed: {str(e)}")
+
+    # Data Display Section
+    if 'df' in st.session_state:
+        df = st.session_state.df
+
+        # Key Metrics
+        st.subheader("📊 Business Insights")
+        cols = st.columns(5)
+        metrics = [
+            ("Total Products", len(df), ""),
+            ("Avg Price", f"₹{df.Price.mean():.2f}", "#2874f0"),
+            ("Avg Rating", f"{df.Rating.mean():.1f}/5", "orange"),
+            ("Avg Discount", f"{df.Discount.mean():.1f}%", "green"),
+            ("Missing Data", df.isna().sum().sum(), "red")
+        ]
+        
+        for col, (title, value, color) in zip(cols, metrics):
+            col.markdown(f"""
+            <div style='padding:15px;background:{color + "10" if color else "#fff"};
+                        border-radius:10px;border:1px solid {color + "30" if color else "#eee"}'>
+                <h4 style='color:{color or "#333"};margin:0'>{title}</h4>
+                <h2 style='color:{color or "#2874f0"};margin:0'>{value}</h2>
+            </div>
+            """, unsafe_allow_html=True)
+
+        # Data Preview
+        st.subheader("🔍 Raw Data Preview")
+        st.dataframe(df, use_container_width=True)
+
+        # Export
+        st.subheader("📥 Export Results")
+        csv = df.to_csv(index=False).encode()
+        st.download_button(
+            label="Download CSV",
+            data=csv,
+            file_name="flipkart_data.csv",
+            mime="text/csv"
+        )
 
         # Analytics Dashboard
-        st.header("📊 Advanced Analytics Dashboard")
-        tab1, tab2, tab3, tab4 = st.tabs([
-            "Price Intelligence", 
-            "Rating Analysis", 
-            "Product Insights",
-            "Text Analytics"
-        ])
-
-        with tab1:
+        st.header("📈 Advanced Analytics")
+        tabs = st.tabs(["Price Trends", "Rating Analysis", "Product Insights","Text Analytics"])
+        #Price Distribution Analysis
+        with tabs[0]:
             st.subheader("💰 Price Distribution Analysis")
             col1, col2 = st.columns(2)
             with col1:
                 fig = plt.figure()
-                sns.histplot(df['price'].dropna(), bins=20, kde=True, color='skyblue')
+                sns.histplot(df['Price'].dropna(), bins=20, kde=True, color='skyblue')
                 plt.xlabel("Price (₹)")
                 st.pyplot(fig)
             with col2:
                 fig = plt.figure()
-                sns.boxplot(x=df['price'].dropna(), color='lightgreen')
+                sns.boxplot(x=df['Price'].dropna(), color='lightgreen')
                 plt.xlabel("Price (₹)")
                 st.pyplot(fig)
 
-        with tab2:
+            st.subheader("🎯 Discount Analysis")
+            col3, col4 = st.columns(2)
+            with col3:
+                fig = plt.figure()
+                sns.histplot(df['Discount'].dropna(), bins=20, kde=True, color='purple')
+                plt.xlabel("Discount (%)")
+                st.pyplot(fig)
+            with col4:
+                fig = plt.figure()
+                sns.scatterplot(x=df['Discount'], y=df['Price'], alpha=0.6, color='green')
+                plt.xlabel("Discount (%)")
+                plt.ylabel("Price (₹)")
+                st.pyplot(fig)
+        #Rating Distribution
+        
+        with tabs[1]:
             st.subheader("⭐ Rating Analysis")
             col1, col2 = st.columns(2)
             with col1:
-                fig = plt.figure()
-                sns.countplot(x=df['rating'].dropna().round(1), palette='viridis')
-                plt.xticks(rotation=45)
+                st.write("**Rating Distribution**")
+                fig, ax = plt.subplots()
+                sns.countplot(x=df.Rating.round(1), ax=ax)
                 st.pyplot(fig)
+            
             with col2:
-                fig = plt.figure()
-                sns.scatterplot(x=df['rating'], y=df['price'], alpha=0.6, color='orange')
+                st.write("**Price vs Rating**")
+                fig, ax = plt.subplots()
+                sns.scatterplot(x=df.Rating, y=df.Price, ax=ax)
                 st.pyplot(fig)
-
-        with tab3:
+        #Product Leaderboards
+        with tabs[2]:
             st.subheader("🏆 Product Leaderboards")
-            st.write("Top 10 expensive products")
-            st.dataframe(df.nlargest(10, 'price')[['name', 'price']].style.format({'price': '₹{:.2f}'}), height=400)
-            st.write("Top 10 rated products")
-            st.dataframe(df.nlargest(10, 'rating')[['name', 'rating']], height=400)        
-
-        with tab4:
+            st.write("**Highest Prices**")
+            st.dataframe(df.nlargest(10, 'Price')[['Name', 'Price']].style.format({'Price': '₹{:.2f}'}), height=400)
+            
+            st.write("**Top Ratings**")
+            st.dataframe(df.nlargest(10, 'Rating')[['Name', 'Rating']], height=400)
+            
+            st.write("**Biggest Discounts**")
+            st.dataframe(df.nlargest(10, 'Discount')[['Name', 'Discount']].style.format({'Discount': '{:.1f}%'}), height=400)
+        #Product Name Analytics
+        with tabs[3]:
             st.subheader("📝 Product Name Analytics")
-            if not df['name'].dropna().empty:
-                wordcloud = WordCloud(width=800, height=400, background_color='white').generate(' '.join(df['name'].dropna()))
+            if not df['Name'].empty:
+                wordcloud = WordCloud(width=800, height=400, background_color='white').generate(' '.join(df['Name'].dropna()))
                 fig = plt.figure()
                 plt.imshow(wordcloud, interpolation='bilinear')
                 plt.axis('off')
                 st.pyplot(fig)
             else:
                 st.warning("No product names available for text analysis")
-    else:
-        st.warning("No data was scraped. Please check the URL and try again.")
-else:
-    st.info("Enter a Flipkart URL and select the number of pages, then click 'Scrape Data' to begin.")
+
+if __name__ == "__main__":
+    main()
